@@ -2,6 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
+// the version number grows by itself with every build (set by the GitHub workflow)
+def vCode = (project.findProperty('versionCodeOverride') ?: '1').toInteger()
+def repoSlug = project.findProperty('repoSlug') ?: 'OWNER/REPO'
+
 android {
     namespace 'com.community.attendance'
     compileSdk 34
@@ -10,13 +14,39 @@ android {
         applicationId 'com.community.attendance'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '0.1-test'
+        versionCode vCode
+        versionName "1.${vCode}"
+        // where the app sends people to download a new version
+        buildConfigField 'String', 'UPDATE_URL',
+                ("\"https://github.com/${repoSlug}/releases/latest/download/AttendanceApp.apk\"").toString()
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    signingConfigs {
+        release {
+            if (System.getenv('KEYSTORE_FILE')) {
+                storeFile file(System.getenv('KEYSTORE_FILE'))
+                storePassword System.getenv('KEY_PASS')
+                keyAlias 'attendance'
+                keyPassword System.getenv('KEY_PASS')
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            if (System.getenv('KEYSTORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -24,4 +54,9 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.12.0'
+    implementation 'androidx.webkit:webkit:1.11.0'
 }

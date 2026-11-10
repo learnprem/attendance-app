@@ -12,21 +12,63 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
 import android.view.Gravity;
+import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
+import java.util.Collections;
 
 public class MainActivity extends Activity {
 
     static final String PREFS = "attendance";
     private WebView web;
+    private LinearLayout offline;
+    private String homeUrl = "";
+
+    /* Runs inside every page (and frame): turns a "download" of a PDF or Excel file into a call to the app */
+    private static final String SHIM =
+            "(function(){"
+            + "if(window.__appShim)return;window.__appShim=true;"
+            + "function send(b,n,m){try{Android.saveFile(b,n,m);}catch(e){}}"
+            + "function fromBlob(bl,n){var r=new FileReader();"
+            + "r.onloadend=function(){send(String(r.result).split(',')[1]||'',n,bl.type||'application/octet-stream');};"
+            + "r.readAsDataURL(bl);}"
+            + "var orig=HTMLAnchorElement.prototype.click;"
+            + "HTMLAnchorElement.prototype.click=function(){"
+            + "var a=this,h=a.href||'';"
+            + "if(a.hasAttribute('download')&&window.Android&&window.Android.saveFile){"
+            + "var n=a.getAttribute('download')||'file';"
+            + "if(h.indexOf('blob:')===0){fetch(h).then(function(r){return r.blob();})"
+            + ".then(function(b){fromBlob(b,n);});return;}"
+            + "var m=/^data:([^;,]*)(;base64)?,(.*)$/.exec(h);"
+            + "if(m){if(m[2]){send(m[3],n,m[1]||'application/octet-stream');}"
+            + "else{send(btoa(decodeURIComponent(m[3])),n,m[1]||'text/plain');}return;}"
+            + "}"
+            + "return orig.apply(this,arguments);};"
+            + "})();";
+
+    /* Hides the grey "created by another user" bar, without touching the page itself */
+    private static final String HIDE_BANNER =
+            "(function(){try{var all=document.querySelectorAll('div,span,p,td');"
+            + "for(var i=0;i<all.length;i++){var e=all[i];var t=e.textContent||'';"
+            + "if(t.length<300&&/created by (another|a) (google )?user|not by google/i.test(t)){"
+            + "var x=e;"
+            + "while(x.parentElement&&x.parentElement!==document.body&&!x.parentElement.querySelector('iframe')"
+            + "&&(x.parentElement.textContent||'').length<300){x=x.parentElement;}"
+            + "if(!x.querySelector('iframe')){x.style.display='none';}}}}catch(e){}})();";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -103,10 +145,47 @@ public class MainActivity extends Activity {
         }
     }
 
+    /* The "no internet" screen with a Retry button, shown on top of the page */
+    private LinearLayout buildOffline() {
+        float d = getResources().getDisplayMetrics().density;
+        int pad = (int) (32 * d);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(pad, pad, pad, pad);
+        box.setBackgroundColor(0xFFFFFFFF);
+        box.setClickable(true);
+
+        TextView t = new TextView(this);
+        t.setText("No internet connection.\nPlease check your connection and try again.");
+        t.setTextSize(18);
+        t.setGravity(Gravity.CENTER);
+
+        Button retry = new Button(this);
+        retry.setText("Retry");
+        retry.setOnClickListener(v -> {
+            box.setVisibility(View.GONE);
+            if (web != null) web.loadUrl(homeUrl);
+        });
+
+        box.addView(t);
+        box.addView(retry);
+        box.setVisibility(View.GONE);
+        return box;
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private void showWeb(String url) {
+        homeUrl = url;
         web = new WebView(this);
-        setContentView(web);
+        offline = buildOffline();
+
+        FrameLayout root = new FrameLayout(this);
+        root.addView(web, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        root.addView(offline, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(root);
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -114,6 +193,11 @@ public class MainActivity extends Activity {
         s.setSupportMultipleWindows(true);
 
         web.addJavascriptInterface(new Bridge(), "Android");
+
+        // lets PDF and Excel downloads from the pages reach the app
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(web, SHIM, Collections.singleton("*"));
+        }
 
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -123,6 +207,26 @@ public class MainActivity extends Activity {
                 if (isGoogle(u)) return false;
                 openExternal(u);
                 return true;
+            }
+
+            @Override
+            public void onPageStarted(WebView view, String u, Bitmap icon) {
+                offline.setVisibility(View.GONE);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                if (request.isForMainFrame()) offline.setVisibility(View.VISIBLE);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String u) {
+                // the bar is added a moment after the page loads, so try a few times
+                final WebView w = view;
+                int[] waits = {300, 1200, 3000};
+                for (int ms : waits) {
+                    w.postDelayed(() -> w.evaluateJavascript(HIDE_BANNER, null), ms);
+                }
             }
         });
 
@@ -155,6 +259,7 @@ public class MainActivity extends Activity {
         });
 
         web.loadUrl(url);
+        Updater.check(this, url);
     }
 
     /* The web page calls these through window.Android */
@@ -167,6 +272,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void testReminder() {
             Reminders.test(getApplicationContext());
+        }
+
+        @JavascriptInterface
+        public void saveFile(String base64, String name, String mime) {
+            FileSaver.save(MainActivity.this, base64, name, mime);
         }
     }
 
