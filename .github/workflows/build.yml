@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,10 +23,75 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+      - name: Create the signing key (only the first time)
+        env:
+          KEY_PASS: ${{ secrets.KEY_PASS }}
+        run: |
+          if [ -f release.keystore.enc ]; then
+            echo "The signing key already exists."
+            exit 0
+          fi
+          if [ -z "$KEY_PASS" ]; then
+            echo "No KEY_PASS secret yet: this build will be a test APK."
+            exit 0
+          fi
+          if [ ${#KEY_PASS} -lt 16 ]; then
+            echo "KEY_PASS must have at least 16 characters."
+            exit 1
+          fi
+          keytool -genkeypair -keystore release.keystore -storetype PKCS12 \
+            -alias attendance -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$KEY_PASS" -keypass "$KEY_PASS" \
+            -dname "CN=Attendance, O=Community, C=IN"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in release.keystore -out release.keystore.enc -pass env:KEY_PASS
+          rm release.keystore
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add release.keystore.enc
+          git commit -m "Add encrypted signing key"
+          git push
+
+      - name: Prepare the signing key
+        env:
+          KEY_PASS: ${{ secrets.KEY_PASS }}
+        run: |
+          if [ -f release.keystore.enc ] && [ -n "$KEY_PASS" ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+              -in release.keystore.enc -out "$RUNNER_TEMP/release.keystore" -pass env:KEY_PASS
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "SIGNED=yes" >> "$GITHUB_ENV"
+          else
+            echo "SIGNED=no" >> "$GITHUB_ENV"
+            echo "No signing key yet: building a test APK."
+          fi
+
+      - name: Build the APK
+        env:
+          KEY_PASS: ${{ secrets.KEY_PASS }}
+        run: |
+          if [ "$SIGNED" = "yes" ]; then
+            gradle assembleRelease --no-daemon \
+              -PversionCodeOverride=${{ github.run_number }} -PrepoSlug=${{ github.repository }}
+            cp app/build/outputs/apk/release/app-release.apk AttendanceApp.apk
+          else
+            gradle assembleDebug --no-daemon \
+              -PversionCodeOverride=${{ github.run_number }} -PrepoSlug=${{ github.repository }}
+            cp app/build/outputs/apk/debug/app-debug.apk AttendanceApp.apk
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: attendance-app-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: AttendanceApp.apk
+
+      - name: Publish a release (only for signed builds)
+        if: env.SIGNED == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ github.run_number }}" AttendanceApp.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Version ${{ github.run_number }}" \
+            --notes "Version ${{ github.run_number }}" \
+            --latest
