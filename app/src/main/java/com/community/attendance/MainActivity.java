@@ -60,15 +60,24 @@ public class MainActivity extends Activity {
             + "return orig.apply(this,arguments);};"
             + "})();";
 
-    /* Hides the grey "created by another user" bar, without touching the page itself */
+    /* Hides the grey "created by a Google Apps Script user" bar, without touching the page itself */
     private static final String HIDE_BANNER =
-            "(function(){try{var all=document.querySelectorAll('div,span,p,td');"
+            "(function(){try{"
+            + "if(window.__bannerDone)return;"
+            + "window.__bannerTry=(window.__bannerTry||0)+1;"
+            + "var all=document.querySelectorAll('div,span,p,td,a'),hid=0;"
             + "for(var i=0;i<all.length;i++){var e=all[i];var t=e.textContent||'';"
-            + "if(t.length<300&&/created by (another|a) (google )?user|not by google/i.test(t)){"
+            + "if(t.length<300&&/this application was created by|not by google/i.test(t)){"
             + "var x=e;"
             + "while(x.parentElement&&x.parentElement!==document.body&&!x.parentElement.querySelector('iframe')"
             + "&&(x.parentElement.textContent||'').length<300){x=x.parentElement;}"
-            + "if(!x.querySelector('iframe')){x.style.display='none';}}}}catch(e){}})();";
+            + "if(!x.querySelector('iframe')){x.style.display='none';hid++;}}}"
+            + "if(hid){window.__bannerDone=true;return;}"
+            + "if(window.__bannerTry>=3){var f=document.querySelector('iframe');var n=f;"
+            + "while(n&&n!==document.body){var q=n.previousElementSibling;"
+            + "while(q){if(q.tagName!=='SCRIPT'&&q.tagName!=='STYLE'&&!q.querySelector('iframe')&&(q.textContent||'').length<300){q.style.display='none';}"
+            + "q=q.previousElementSibling;}n=n.parentElement;}window.__bannerDone=true;}"
+            + "}catch(e){}})();";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -149,7 +158,7 @@ public class MainActivity extends Activity {
     private LinearLayout buildOffline() {
         float d = getResources().getDisplayMetrics().density;
         int pad = (int) (32 * d);
-        LinearLayout box = new LinearLayout(this);
+        final LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
         box.setPadding(pad, pad, pad, pad);
